@@ -1,51 +1,104 @@
-"""Shared helper utilities for formatting, validation, and downloads."""
+"""
+utils.py
+--------
+Small, reusable helper functions shared across the dashboard.
+Keeping these in one place avoids duplicated code in app.py and other modules.
+"""
 
 from __future__ import annotations
 
-import re
-from datetime import date
-
+import numpy as np
 import pandas as pd
 
 
-def format_currency(value: float | int | None, currency: str = "USD") -> str:
-    """Format a numeric value with a currency code."""
-    if value is None or pd.isna(value):
+def format_currency(value: float, symbol: str = "$") -> str:
+    """Format a number as a currency string, e.g. $1,234.56."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
         return "N/A"
-    return f"{currency} {value:,.2f}" if currency else f"{value:,.2f}"
+    return f"{symbol}{value:,.2f}"
 
 
-def format_percentage(value: float | int | None, decimals: int = 2) -> str:
-    """Format a numeric value as a percentage string."""
-    if value is None or pd.isna(value):
+def format_percent(value: float, decimals: int = 2) -> str:
+    """Format a fraction or percentage-like float as a percentage string."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
         return "N/A"
     return f"{value:.{decimals}f}%"
 
 
-def dataframe_to_csv(df: pd.DataFrame, include_index: bool = True) -> str:
-    """Convert a DataFrame into a CSV string for Streamlit downloads."""
-    return df.to_csv(index=include_index)
+def detect_currency_symbol(ticker: str) -> str:
+    """
+    Pick a sensible currency symbol based on the ticker suffix.
+    Indian tickers (NSE/BSE) end in .NS / .BO and are quoted in INR.
+    Everything else defaults to USD ($).
+    """
+    ticker = ticker.upper().strip()
+    if ticker.endswith(".NS") or ticker.endswith(".BO"):
+        return "\u20b9"  # Rupee symbol
+    return "$"
 
 
-def validate_tickers(raw_tickers: str | list[str]) -> list[str]:
-    """Validate and normalise ticker symbols entered by the user."""
-    if isinstance(raw_tickers, str):
-        candidates = raw_tickers.split(",")
+def risk_level_from_volatility(annual_volatility_pct: float) -> str:
+    """
+    Classify annualized volatility (%) into a simple risk bucket.
+    These thresholds are a reasonable rule-of-thumb for educational use,
+    not formal financial advice.
+    """
+    if annual_volatility_pct is None or np.isnan(annual_volatility_pct):
+        return "Unknown"
+    if annual_volatility_pct < 20:
+        return "Low Risk"
+    elif annual_volatility_pct < 35:
+        return "Moderate Risk"
+    elif annual_volatility_pct < 50:
+        return "High Risk"
     else:
-        candidates = list(raw_tickers)
-
-    tickers = [candidate.strip().upper() for candidate in candidates if candidate and candidate.strip()]
-    if not tickers:
-        raise ValueError("Please enter at least one ticker symbol.")
-
-    invalid = [ticker for ticker in tickers if not re.fullmatch(r"[A-Z0-9.\-=^]+", ticker)]
-    if invalid:
-        raise ValueError(f"Invalid ticker symbol(s): {', '.join(invalid)}")
-
-    return tickers
+        return "Very High Risk"
 
 
-def validate_date_range(start_date: date, end_date: date) -> None:
-    """Ensure the selected date range is valid."""
-    if start_date >= end_date:
-        raise ValueError("Start date must be before end date.")
+def rsi_signal_from_value(rsi_value: float) -> str:
+    """Translate the latest RSI value into a human readable signal."""
+    if rsi_value is None or np.isnan(rsi_value):
+        return "Unknown"
+    if rsi_value >= 70:
+        return "Overbought"
+    elif rsi_value <= 30:
+        return "Oversold"
+    else:
+        return "Neutral"
+
+
+def safe_pct(numerator: float, denominator: float) -> float:
+    """Safely compute a percentage, returning NaN instead of raising on /0."""
+    try:
+        if denominator in (0, None) or pd.isna(denominator):
+            return float("nan")
+        return (numerator / denominator) * 100
+    except (TypeError, ZeroDivisionError):
+        return float("nan")
+
+
+def clean_ticker_list(raw_text: str) -> list[str]:
+    """
+    Turn a comma separated string like 'aapl, msft , TSLA' into a clean,
+    de-duplicated, upper-cased list: ['AAPL', 'MSFT', 'TSLA'].
+    """
+    if not raw_text:
+        return []
+    tickers = [t.strip().upper() for t in raw_text.split(",") if t.strip()]
+    # De-duplicate while preserving order
+    seen = set()
+    unique_tickers = []
+    for t in tickers:
+        if t not in seen:
+            seen.add(t)
+            unique_tickers.append(t)
+    return unique_tickers
+
+
+def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    """Convert a DataFrame to UTF-8 encoded CSV bytes for st.download_button."""
+    return df.to_csv(index=False).encode("utf-8")
+
+
+SAMPLE_TICKERS_INDIA = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "SBIN.NS"]
+SAMPLE_TICKERS_US = ["AAPL", "MSFT", "TSLA", "NVDA", "GOOGL"]

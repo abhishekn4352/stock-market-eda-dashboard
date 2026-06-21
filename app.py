@@ -1,566 +1,429 @@
-"""Streamlit entry point for the Stock Market EDA & Trend Analysis Dashboard."""
+"""
+app.py
+------
+Stock Market EDA & Trend Analysis Dashboard
+=============================================
+
+Main Streamlit entry point. Run with:
+    streamlit run app.py
+
+This file focuses on LAYOUT and FLOW only. All calculations and chart
+construction live in the `src/` package so this file stays short and
+easy to read for interviews / resume walkthroughs.
+"""
 
 from __future__ import annotations
 
-import warnings
-from datetime import datetime, timedelta
+import os
 
-import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.express as px
 
-from src.analysis import (
-    calculate_risk_return_statistics,
-    calculate_stock_kpis,
-    calculate_statistical_summary,
-    calculate_technical_indicators,
-    generate_signal,
-)
-from src.data_loader import fetch_company_info, fetch_stock_data
-from src.preprocessing import prepare_stock_data
-from src.utils import dataframe_to_csv, format_currency, validate_date_range, validate_tickers
-from src.visualizations import (
-    chart_candlestick,
-    chart_correlation_heatmap,
-    chart_daily_returns_bar,
-    chart_daily_returns_histogram,
-    chart_moving_averages,
-    chart_normalised_comparison,
-    chart_risk_return_scatter,
-    chart_rsi,
-    chart_volatility,
-    chart_volume,
+from src import charts, comparison, indicators, kpi, preprocessing
+from src.data_loader import fetch_multiple_close_prices, fetch_stock_data
+from src.utils import (
+    SAMPLE_TICKERS_INDIA,
+    SAMPLE_TICKERS_US,
+    clean_ticker_list,
+    dataframe_to_csv_bytes,
+    detect_currency_symbol,
+    format_currency,
+    format_percent,
 )
 
-warnings.filterwarnings("ignore")
-
-
+# --------------------------------------------------------------------------------------
+# PAGE CONFIG (must be the first Streamlit call)
+# --------------------------------------------------------------------------------------
 st.set_page_config(
-    page_title="StockSense | Market Analytics",
+    page_title="Stock Market EDA & Trend Analysis Dashboard",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
-def inject_custom_css() -> None:
-    """Apply the dark theme and card styling used throughout the dashboard."""
-    st.markdown(
-        """
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Syne:wght@400;600;700;800&display=swap');
+# --------------------------------------------------------------------------------------
+# LOAD CUSTOM CSS (no hardcoded absolute path -> works on Windows/Mac/Linux)
+# --------------------------------------------------------------------------------------
+def load_css(file_name: str) -> None:
+    css_path = os.path.join(os.path.dirname(__file__), "assets", file_name)
+    if os.path.exists(css_path):
+        with open(css_path, "r", encoding="utf-8") as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-        :root {
-            --bg-main: #0a0e1a;
-            --bg-card: #111827;
-            --bg-card2: #1a2235;
-            --accent: #00d4ff;
-            --accent2: #7c3aed;
-            --green: #00e676;
-            --red: #ff1744;
-            --yellow: #ffd600;
-            --text-main: #e2e8f0;
-            --text-muted: #64748b;
-            --border: rgba(255,255,255,0.07);
-        }
 
-        html, body, .stApp {
-            background-color: var(--bg-main) !important;
-            color: var(--text-main) !important;
-            font-family: 'Syne', sans-serif;
-        }
+load_css("style.css")
 
-        [data-testid="stSidebar"] {
-            background: var(--bg-card) !important;
-            border-right: 1px solid var(--border);
-        }
 
-        [data-testid="stSidebar"] * {
-            color: var(--text-main) !important;
-        }
+# --------------------------------------------------------------------------------------
+# HEADER
+# --------------------------------------------------------------------------------------
+st.markdown('<div class="app-title">📈 Stock Market EDA & Trend Analysis Dashboard</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="app-subtitle">Live exploratory data analysis & technical trend analysis '
+    'powered by Yahoo Finance, Pandas, and Plotly.</div>',
+    unsafe_allow_html=True,
+)
 
-        .sidebar-header {
-            background: linear-gradient(135deg, #0a0e1a 0%, #1a2235 100%);
-            border-left: 3px solid var(--accent);
-            padding: 12px 16px;
-            margin-bottom: 20px;
-            border-radius: 0 8px 8px 0;
-        }
 
-        .kpi-card {
-            background: var(--bg-card2);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px 22px;
-            text-align: center;
-            transition: transform .2s, box-shadow .2s;
-        }
+# --------------------------------------------------------------------------------------
+# SIDEBAR CONTROLS
+# --------------------------------------------------------------------------------------
+st.sidebar.header("⚙️ Controls")
 
-        .kpi-card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 8px 24px rgba(0,212,255,.15);
-        }
+ticker_input = st.sidebar.text_input(
+    "Stock Ticker",
+    value="RELIANCE.NS",
+    help="e.g. AAPL (US) or RELIANCE.NS (NSE India)",
+)
 
-        .kpi-label {
-            font-size: 11px;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            color: var(--text-muted);
-            margin-bottom: 8px;
-            font-family: 'IBM Plex Mono', monospace;
-        }
+col_a, col_b = st.sidebar.columns(2)
+start_date = col_a.date_input("Start Date", value=pd.Timestamp.today() - pd.Timedelta(days=365))
+end_date = col_b.date_input("End Date", value=pd.Timestamp.today())
 
-        .kpi-value {
-            font-size: 26px;
-            font-weight: 800;
-            color: var(--accent);
-            font-family: 'IBM Plex Mono', monospace;
-            line-height: 1;
-        }
+interval = st.sidebar.selectbox("Interval", options=["1d", "1wk", "1mo"], index=0)
 
-        .kpi-sub {
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-top: 6px;
-        }
+st.sidebar.markdown("**Moving Average Windows**")
+ma_col1, ma_col2 = st.sidebar.columns(2)
+short_ma_window = ma_col1.number_input("Short MA", min_value=2, max_value=200, value=20, step=1)
+long_ma_window = ma_col2.number_input("Long MA", min_value=2, max_value=400, value=50, step=1)
 
-        .kpi-pos { color: var(--green) !important; }
-        .kpi-neg { color: var(--red) !important; }
+st.sidebar.markdown("---")
+compare_mode = st.sidebar.checkbox("📊 Compare Multiple Stocks", value=False)
+compare_tickers_raw = ""
+if compare_mode:
+    compare_tickers_raw = st.sidebar.text_area(
+        "Comma-separated tickers",
+        value="AAPL, MSFT, TSLA",
+        help="e.g. AAPL, MSFT, TSLA  or  RELIANCE.NS, TCS.NS, INFY.NS",
+    )
 
-        .section-title {
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--text-main);
-            border-left: 3px solid var(--accent);
-            padding-left: 12px;
-            margin: 28px 0 16px 0;
-            letter-spacing: .5px;
-        }
+st.sidebar.markdown("---")
+fetch_clicked = st.sidebar.button("🚀 Fetch Data", use_container_width=True, type="primary")
 
-        .signal-buy  { background:#00e676; color:#000; padding:4px 14px; border-radius:20px; font-weight:700; font-size:13px; }
-        .signal-sell { background:#ff1744; color:#fff; padding:4px 14px; border-radius:20px; font-weight:700; font-size:13px; }
-        .signal-hold { background:#ffd600; color:#000; padding:4px 14px; border-radius:20px; font-weight:700; font-size:13px; }
+with st.sidebar.expander("💡 Sample Tickers"):
+    st.markdown("**🇮🇳 Indian (NSE):** " + ", ".join(SAMPLE_TICKERS_INDIA))
+    st.markdown("**🇺🇸 US:** " + ", ".join(SAMPLE_TICKERS_US))
 
-        div[data-baseweb="input"] input,
-        div[data-baseweb="select"] div,
-        div[data-baseweb="textarea"] textarea,
-        .stDateInput input {
-            background: var(--bg-card2) !important;
-            color: var(--text-main) !important;
-            border: 1px solid rgba(255,255,255,.12) !important;
-            border-radius: 8px !important;
-        }
 
-        .stButton button {
-            background: linear-gradient(135deg, var(--accent), var(--accent2)) !important;
-            color: #000 !important;
-            font-weight: 700 !important;
-            border: none !important;
-            border-radius: 8px !important;
-            padding: 8px 24px !important;
-            font-size: 14px !important;
-            letter-spacing: .5px !important;
-        }
+# --------------------------------------------------------------------------------------
+# SESSION STATE — remember the last successfully fetched data across reruns/tab switches
+# --------------------------------------------------------------------------------------
+if "single_df" not in st.session_state:
+    st.session_state.single_df = None
+if "single_ticker" not in st.session_state:
+    st.session_state.single_ticker = None
+if "compare_df" not in st.session_state:
+    st.session_state.compare_df = None
+if "failed_compare_tickers" not in st.session_state:
+    st.session_state.failed_compare_tickers = []
 
-        .stButton button:hover { opacity: .85 !important; }
+if fetch_clicked:
+    if start_date >= end_date:
+        st.sidebar.error("Start date must be before end date.")
+    else:
+        with st.spinner(f"Fetching data for {ticker_input}..."):
+            df, error = fetch_stock_data(
+                ticker_input, str(start_date), str(end_date), interval
+            )
+        if error:
+            st.session_state.single_df = None
+            st.sidebar.error(error)
+        else:
+            st.session_state.single_df = df
+            st.session_state.single_ticker = ticker_input.strip().upper()
+            st.sidebar.success(f"Loaded {len(df)} rows for {ticker_input.upper()}")
 
-        .stTabs [data-baseweb="tab-list"] {
-            background: var(--bg-card) !important;
-            border-radius: 10px !important;
-            gap: 4px !important;
-        }
+        if compare_mode:
+            tickers_list = clean_ticker_list(compare_tickers_raw)
+            if len(tickers_list) < 2:
+                st.sidebar.warning("Enter at least 2 tickers (comma-separated) to compare.")
+            else:
+                with st.spinner("Fetching comparison data..."):
+                    cdf, failed = fetch_multiple_close_prices(
+                        tuple(tickers_list), str(start_date), str(end_date), interval
+                    )
+                st.session_state.compare_df = cdf if not cdf.empty else None
+                st.session_state.failed_compare_tickers = failed
+                if failed:
+                    st.sidebar.warning(f"Could not fetch: {', '.join(failed)}")
 
-        .stTabs [data-baseweb="tab"] {
-            color: var(--text-muted) !important;
-            border-radius: 8px !important;
-            padding: 8px 18px !important;
-            font-weight: 600 !important;
-        }
 
-        .stTabs [aria-selected="true"] {
-            background: linear-gradient(135deg,#00d4ff22,#7c3aed22) !important;
-            color: var(--accent) !important;
-            border-bottom: 2px solid var(--accent) !important;
-        }
+# --------------------------------------------------------------------------------------
+# MAIN TABS
+# --------------------------------------------------------------------------------------
+tab_overview, tab_technical, tab_eda, tab_compare, tab_risk, tab_about = st.tabs(
+    ["🏠 Overview", "📐 Technical Analysis", "🔍 EDA", "⚖️ Compare Stocks", "🎯 Risk & Returns", "ℹ️ About Project"]
+)
 
-        .stDataFrame { background: var(--bg-card) !important; border-radius: 10px !important; }
+single_df = st.session_state.single_df
+single_ticker = st.session_state.single_ticker or ticker_input.strip().upper()
+currency_symbol = detect_currency_symbol(single_ticker)
 
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: var(--bg-main); }
-        ::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 3px; }
-        </style>
-        """,
-        unsafe_allow_html=True,
+# Pre-compute the enriched (preprocessed + indicators) DataFrame once, reused by several tabs
+enriched_df = None
+if single_df is not None and not single_df.empty:
+    enriched_df = preprocessing.preprocess_stock_data(single_df, volatility_window=int(short_ma_window))
+    enriched_df = indicators.add_all_indicators(
+        enriched_df, short_window=int(short_ma_window), long_window=int(long_ma_window)
     )
 
 
-def render_page_header() -> None:
-    """Render the main dashboard banner."""
-    st.markdown(
-        """
-        <div style="display:flex; align-items:center; gap:16px; padding:8px 0 20px 0; border-bottom:1px solid rgba(255,255,255,0.07); margin-bottom:24px;">
-            <span style="font-size:38px;">📈</span>
-            <div>
-                <div style="font-size:28px; font-weight:800; color:#e2e8f0; line-height:1;">StockSense</div>
-                <div style="font-size:13px; color:#64748b; letter-spacing:2px; font-family:'IBM Plex Mono',monospace;">
-                    MARKET EDA & TREND ANALYSIS DASHBOARD
-                </div>
-            </div>
-            <div style="margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:12px; color:#64748b; text-align:right;">
-                Last updated: %s
-            </div>
-        </div>
-        """
-        % datetime.now().strftime("%d %b %Y  %H:%M"),
-        unsafe_allow_html=True,
-    )
+# ========================================================================================
+# TAB 1: OVERVIEW
+# ========================================================================================
+with tab_overview:
+    if single_df is None:
+        st.info("👈 Enter a ticker in the sidebar and click **Fetch Data** to begin.")
+    else:
+        kpis = kpi.compute_kpis(enriched_df)
 
+        st.markdown('<div class="section-header">Key Performance Indicators</div>', unsafe_allow_html=True)
+        kpi_cols = st.columns(4)
 
-def render_sidebar() -> dict:
-    """Render sidebar controls and return the selected dashboard options."""
-    with st.sidebar:
-        st.markdown(
-            """
-            <div class="sidebar-header">
-                <span style="font-size:20px; font-weight:800; color:#00d4ff;">📈 StockSense</span><br>
-                <span style="font-size:11px; color:#64748b; letter-spacing:1px;">MARKET ANALYTICS</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("#### 🔎 Stock Selection")
-        raw_tickers = st.text_input(
-            "Enter Ticker(s)",
-            value="AAPL, TSLA",
-            help="Comma-separated: AAPL, TSLA, TCS.NS, RELIANCE.NS",
-        )
-
-        st.markdown("#### 📅 Date Range")
-        default_start = datetime.today() - timedelta(days=365)
-        start_date = st.date_input("Start Date", value=default_start)
-        end_date = st.date_input("End Date", value=datetime.today())
-
-        st.markdown("---")
-        st.markdown("#### ⚙️ Analysis Options")
-        show_eda = st.checkbox("Show EDA", value=True)
-        show_candle = st.checkbox("Candlestick Chart", value=True)
-        show_ma = st.checkbox("Moving Averages", value=True)
-        show_vol = st.checkbox("Volume Analysis", value=True)
-        show_ret = st.checkbox("Returns Analysis", value=True)
-        show_risk = st.checkbox("Volatility & RSI", value=True)
-        show_comp = st.checkbox("Multi-Stock Comparison", value=True)
-
-        st.markdown("---")
-        fetch_btn = st.button("🚀 Analyse Stocks", use_container_width=True)
-
-        st.markdown(
-            """
-            <div style='margin-top:30px; font-size:11px; color:#64748b; text-align:center;
-                        font-family:"IBM Plex Mono",monospace; line-height:1.8;'>
-                Data: Yahoo Finance API<br>
-                Refresh: Every 5 min<br>
-                Built with Streamlit
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    return {
-        "raw_tickers": raw_tickers,
-        "start": start_date,
-        "end": end_date,
-        "fetch": fetch_btn,
-        "show_eda": show_eda,
-        "show_candle": show_candle,
-        "show_ma": show_ma,
-        "show_vol": show_vol,
-        "show_ret": show_ret,
-        "show_risk": show_risk,
-        "show_comp": show_comp,
-    }
-
-
-def render_feature_cards() -> None:
-    """Show the default landing cards before the first analysis run."""
-    cols = st.columns(4)
-    features = [
-        ("🕯️", "Candlestick Charts", "Interactive OHLCV with Bollinger Bands"),
-        ("📐", "Technical Indicators", "MA20/50/100 · RSI · Volatility"),
-        ("🔗", "Correlation Analysis", "Multi-stock correlation heatmap"),
-        ("⚡", "Buy / Sell Signals", "MA crossover signal engine"),
-    ]
-    for col, (icon, title, desc) in zip(cols, features):
-        col.markdown(
-            f"""
-            <div class="kpi-card" style="text-align:left;">
-                <div style="font-size:28px; margin-bottom:8px;">{icon}</div>
-                <div style="font-weight:700; margin-bottom:4px; color:#e2e8f0;">{title}</div>
-                <div style="font-size:12px; color:#64748b;">{desc}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-def render_landing_state() -> None:
-    """Render the initial screen shown before the user runs an analysis."""
-    st.markdown(
-        """
-        <div style="text-align:center; padding:60px 20px;">
-            <div style="font-size:64px; margin-bottom:16px;">📊</div>
-            <div style="font-size:22px; font-weight:700; color:#e2e8f0; margin-bottom:8px;">
-                Ready to Analyse Your Stocks
-            </div>
-            <div style="font-size:14px; color:#64748b; max-width:480px; margin:auto; line-height:1.8;">
-                Enter one or more ticker symbols in the sidebar (e.g. AAPL, TSLA, RELIANCE.NS),
-                choose a date range, and click <b style="color:#00d4ff;">Analyse Stocks</b>.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    render_feature_cards()
-
-
-def render_kpi_cards(df: pd.DataFrame, ticker: str, info: dict) -> None:
-    """Render the KPI card row for the selected stock."""
-    kpis = calculate_stock_kpis(df)
-    currency = info.get("currency", "USD")
-    total_return = kpis["total_return"]
-    ret_class = "kpi-pos" if total_return >= 0 else "kpi-neg"
-    sign = "▲" if total_return >= 0 else "▼"
-
-    cards = [
-        ("CURRENT PRICE", format_currency(kpis["current_price"], currency), currency, ""),
-        ("PERIOD HIGH", format_currency(kpis["period_high"], currency), currency, "kpi-pos"),
-        ("PERIOD LOW", format_currency(kpis["period_low"], currency), currency, "kpi-neg"),
-        ("AVG VOLUME", f"{kpis['average_volume'] / 1e6:.2f}M", "shares", ""),
-        ("TOTAL RETURN", f"{sign} {abs(total_return):.2f}%", "", ret_class),
-    ]
-
-    cols = st.columns(5)
-    for col, (label, value, sub, cls) in zip(cols, cards):
-        with col:
-            st.markdown(
-                f"""
-                <div class="kpi-card">
-                    <div class="kpi-label">{label}</div>
-                    <div class="kpi-value {cls}">{value}</div>
-                    <div class="kpi-sub">{sub}</div>
-                </div>
-                """,
+        def kpi_card(col, label, value, css_class=""):
+            col.markdown(
+                f"""<div class="kpi-card">
+                        <div class="kpi-label">{label}</div>
+                        <div class="kpi-value {css_class}">{value}</div>
+                    </div>""",
                 unsafe_allow_html=True,
             )
 
+        kpi_card(kpi_cols[0], "Latest Close", format_currency(kpis.get("latest_close"), currency_symbol))
+        ret_class = "kpi-positive" if kpis.get("total_return_pct", 0) >= 0 else "kpi-negative"
+        kpi_card(kpi_cols[1], "Total Return", format_percent(kpis.get("total_return_pct")), ret_class)
+        kpi_card(kpi_cols[2], "Avg Daily Return", format_percent(kpis.get("avg_daily_return_pct")))
+        kpi_card(kpi_cols[3], "Annualized Volatility", format_percent(kpis.get("annualized_volatility_pct")))
 
-def render_eda(df: pd.DataFrame) -> None:
-    """Render the EDA panels for the selected stock."""
-    st.markdown('<div class="section-title">📋 Dataset Overview</div>', unsafe_allow_html=True)
+        kpi_cols2 = st.columns(4)
+        kpi_card(kpi_cols2[0], "Highest Price", format_currency(kpis.get("highest_price"), currency_symbol))
+        kpi_card(kpi_cols2[1], "Lowest Price", format_currency(kpis.get("lowest_price"), currency_symbol))
+        kpi_card(kpi_cols2[2], "Risk Level", kpis.get("risk_level", "N/A"), "kpi-neutral")
+        kpi_card(kpi_cols2[3], "RSI Signal", f"{kpis.get('rsi_signal','N/A')} ({kpis.get('latest_rsi', float('nan')):.1f})")
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Trading Days", len(df))
-    c2.metric("Columns", len(df.columns))
-    c3.metric("Missing Values", int(df.isnull().sum().sum()))
+        st.markdown('<div class="section-header">Candlestick Chart</div>', unsafe_allow_html=True)
+        ma_cols = [c for c in [f"SMA_{short_ma_window}", f"SMA_{long_ma_window}"] if c in enriched_df.columns]
+        st.plotly_chart(charts.candlestick_chart(enriched_df, ma_columns=ma_cols, ticker=single_ticker), use_container_width=True)
 
-    tab1, tab2, tab3 = st.tabs(["📊 Statistical Summary", "🔍 Missing Values", "🗂️ Raw Data Preview"])
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown('<div class="section-header">Closing Price Trend</div>', unsafe_allow_html=True)
+            st.plotly_chart(charts.line_chart(enriched_df, "Close", "Closing Price Trend", "Close Price"), use_container_width=True)
+        with c2:
+            st.markdown('<div class="section-header">Trading Volume</div>', unsafe_allow_html=True)
+            st.plotly_chart(charts.volume_chart(enriched_df, ticker=single_ticker), use_container_width=True)
 
-    with tab1:
-        summary = calculate_statistical_summary(df)
-        if summary.empty:
-            st.info("No numeric columns available for summary statistics.")
-        else:
-            st.dataframe(summary.style.background_gradient(cmap="Blues"), use_container_width=True)
-
-    with tab2:
-        missing = df.isnull().sum().reset_index()
-        missing.columns = ["Column", "Missing Count"]
-        missing["Missing %"] = (missing["Missing Count"] / len(df) * 100).round(2)
-        st.dataframe(missing, use_container_width=True)
-
-        if missing["Missing Count"].sum() > 0:
-            fig = px.bar(
-                missing,
-                x="Column",
-                y="Missing %",
-                color="Missing %",
-                color_continuous_scale="reds",
-                title="Missing Data by Column",
-            )
-            fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.success("✅ No missing values found in the dataset.")
-
-    with tab3:
-        numeric_columns = df.select_dtypes(include=[np.number]).columns
-        if len(numeric_columns) > 0:
-            st.dataframe(
-                df.tail(30).style.format({col: "{:.2f}" for col in numeric_columns}),
-                use_container_width=True,
-            )
-        else:
-            st.dataframe(df.tail(30), use_container_width=True)
-
-
-def render_stock_header(ticker: str, name: str, signal: str) -> None:
-    """Render the stock title strip and crossover signal."""
-    sig_class = {"BUY": "signal-buy", "SELL": "signal-sell"}.get(signal, "signal-hold")
-    st.markdown(
-        f"""
-        <div style="display:flex; align-items:center; justify-content:space-between;
-                    background:var(--bg-card); border:1px solid var(--border);
-                    border-radius:12px; padding:16px 22px; margin-bottom:20px;">
-            <div>
-                <span style="font-size:22px; font-weight:800; color:#00d4ff;">{ticker}</span>
-                <span style="font-size:13px; color:#64748b; margin-left:12px;">{name}</span>
-            </div>
-            <div>
-                <span style="font-size:11px; color:#64748b; margin-right:8px; font-family:'IBM Plex Mono';">MA CROSSOVER SIGNAL</span>
-                <span class="{sig_class}">{signal}</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def main() -> None:
-    """Run the dashboard."""
-    inject_custom_css()
-    render_page_header()
-    cfg = render_sidebar()
-
-    if not cfg["fetch"]:
-        render_landing_state()
-        return
-
-    try:
-        tickers = validate_tickers(cfg["raw_tickers"])
-        validate_date_range(cfg["start"], cfg["end"])
-    except ValueError as exc:
-        st.warning(str(exc))
-        return
-
-    start_str = str(cfg["start"])
-    end_str = str(cfg["end"])
-
-    all_data: dict[str, pd.DataFrame] = {}
-    all_returns: dict[str, pd.Series] = {}
-
-    progress = st.progress(0, text="Fetching market data…")
-    for index, ticker in enumerate(tickers):
-        progress.progress((index + 1) / len(tickers), text=f"Fetching {ticker}…")
-        try:
-            raw_df = fetch_stock_data(ticker, start_str, end_str)
-            prepared_df = prepare_stock_data(raw_df)
-            enriched_df = calculate_technical_indicators(prepared_df)
-        except ValueError as exc:
-            st.warning(f"⚠️ {exc}")
-            continue
-        except RuntimeError as exc:
-            st.error(str(exc))
-            continue
-
-        all_data[ticker] = enriched_df
-        all_returns[ticker] = enriched_df["Daily_Return"].dropna()
-
-    progress.empty()
-
-    if not all_data:
-        st.error("❌ No valid data retrieved. Please check the ticker symbols and try again.")
-        return
-
-    returns_df = pd.DataFrame(all_returns).dropna()
-
-    for ticker, df in all_data.items():
-        info = fetch_company_info(ticker)
-        name = info.get("longName", ticker)
-        signal = generate_signal(df)
-
-        render_stock_header(ticker, name, signal)
-        render_kpi_cards(df, ticker, info)
-        st.markdown("")
-
-        if cfg["show_eda"]:
-            render_eda(df)
-
-        if cfg["show_candle"]:
-            st.markdown('<div class="section-title">🕯️ Candlestick Chart</div>', unsafe_allow_html=True)
-            st.plotly_chart(chart_candlestick(df, ticker), use_container_width=True)
-
-        if cfg["show_ma"]:
-            st.markdown('<div class="section-title">📐 Moving Averages</div>', unsafe_allow_html=True)
-            st.plotly_chart(chart_moving_averages(df, ticker), use_container_width=True)
-
-        if cfg["show_vol"]:
-            st.markdown('<div class="section-title">📊 Volume Analysis</div>', unsafe_allow_html=True)
-            st.plotly_chart(chart_volume(df, ticker), use_container_width=True)
-
-        if cfg["show_ret"]:
-            st.markdown('<div class="section-title">📉 Returns Analysis</div>', unsafe_allow_html=True)
-            left_col, right_col = st.columns(2)
-            with left_col:
-                st.plotly_chart(chart_daily_returns_bar(df, ticker), use_container_width=True)
-            with right_col:
-                st.plotly_chart(chart_daily_returns_histogram(df, ticker), use_container_width=True)
-
-        if cfg["show_risk"]:
-            st.markdown('<div class="section-title">⚡ Volatility & RSI</div>', unsafe_allow_html=True)
-            left_col, right_col = st.columns([3, 2])
-            with left_col:
-                st.plotly_chart(chart_volatility(df, ticker), use_container_width=True)
-            with right_col:
-                st.plotly_chart(chart_rsi(df, ticker), use_container_width=True)
-
+        st.markdown('<div class="section-header">Export Data</div>', unsafe_allow_html=True)
         st.download_button(
-            label=f"⬇️ Download {ticker} CSV",
-            data=dataframe_to_csv(df),
-            file_name=f"{ticker}_analysis_{start_str}_{end_str}.csv",
-            mime="text/csv",
-        )
-        st.markdown("---")
-
-    if len(all_data) >= 2 and cfg["show_comp"]:
-        st.markdown('<div class="section-title">🔗 Multi-Stock Comparison</div>', unsafe_allow_html=True)
-        st.plotly_chart(chart_normalised_comparison(all_data), use_container_width=True)
-
-        if len(returns_df.columns) >= 2:
-            st.markdown('<div class="section-title">🌡️ Correlation Heatmap</div>', unsafe_allow_html=True)
-            st.plotly_chart(chart_correlation_heatmap(returns_df), use_container_width=True)
-
-        st.markdown('<div class="section-title">📌 Risk vs Return</div>', unsafe_allow_html=True)
-        stats_df = calculate_risk_return_statistics(all_data)
-        st.plotly_chart(chart_risk_return_scatter(stats_df), use_container_width=True)
-
-        st.markdown('<div class="section-title">📋 Comparative Summary</div>', unsafe_allow_html=True)
-        st.dataframe(
-            stats_df.style
-            .background_gradient(subset=["Total_Return"], cmap="RdYlGn")
-            .background_gradient(subset=["Annual_Risk"], cmap="RdYlGn_r")
-            .background_gradient(subset=["Sharpe"], cmap="Blues")
-            .format({"Total_Return": "{:.2f}%", "Annual_Risk": "{:.2f}%", "Sharpe": "{:.3f}"}),
-            use_container_width=True,
-        )
-
-        st.download_button(
-            "⬇️ Download Combined Returns CSV",
-            data=dataframe_to_csv(returns_df.reset_index(), include_index=False),
-            file_name=f"combined_returns_{start_str}_{end_str}.csv",
+            "⬇️ Download Cleaned Stock Data (CSV)",
+            data=dataframe_to_csv_bytes(enriched_df),
+            file_name=f"{single_ticker}_cleaned_data.csv",
             mime="text/csv",
         )
 
+
+# ========================================================================================
+# TAB 2: TECHNICAL ANALYSIS
+# ========================================================================================
+with tab_technical:
+    if single_df is None:
+        st.info("👈 Fetch data from the sidebar first to see technical indicators.")
+    else:
+        st.markdown('<div class="section-header">Moving Averages</div>', unsafe_allow_html=True)
+        ma_cols = [c for c in [f"SMA_{short_ma_window}", f"SMA_{long_ma_window}", f"EMA_{short_ma_window}", f"EMA_{long_ma_window}"] if c in enriched_df.columns]
+        st.plotly_chart(charts.candlestick_chart(enriched_df, ma_columns=ma_cols, ticker=single_ticker), use_container_width=True)
+
+        st.markdown('<div class="section-header">Bollinger Bands</div>', unsafe_allow_html=True)
+        st.plotly_chart(charts.bollinger_chart(enriched_df, ticker=single_ticker), use_container_width=True)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown('<div class="section-header">RSI</div>', unsafe_allow_html=True)
+            st.plotly_chart(charts.rsi_chart(enriched_df), use_container_width=True)
+        with col2:
+            st.markdown('<div class="section-header">MACD</div>', unsafe_allow_html=True)
+            st.plotly_chart(charts.macd_chart(enriched_df), use_container_width=True)
+
+        col3, col4 = st.columns(2)
+        with col3:
+            vol_col = f"Volatility ({int(short_ma_window)}d)"
+            st.markdown('<div class="section-header">Rolling Volatility</div>', unsafe_allow_html=True)
+            st.plotly_chart(charts.line_chart(enriched_df, vol_col, "Rolling Volatility (Annualized %)", "Volatility (%)", color="#ffd166"), use_container_width=True)
+        with col4:
+            st.markdown('<div class="section-header">Drawdown</div>', unsafe_allow_html=True)
+            st.plotly_chart(charts.drawdown_chart(enriched_df), use_container_width=True)
+
+        st.download_button(
+            "⬇️ Download Technical Indicator Data (CSV)",
+            data=dataframe_to_csv_bytes(enriched_df),
+            file_name=f"{single_ticker}_indicators.csv",
+            mime="text/csv",
+        )
+
+
+# ========================================================================================
+# TAB 3: EDA
+# ========================================================================================
+with tab_eda:
+    if single_df is None:
+        st.info("👈 Fetch data from the sidebar first to explore the dataset.")
+    else:
+        df = enriched_df
+
+        st.markdown('<div class="section-header">Dataset Preview</div>', unsafe_allow_html=True)
+        st.dataframe(df.head(10), use_container_width=True)
+        st.caption(f"Shape: {df.shape[0]} rows × {df.shape[1]} columns")
+
+        st.markdown('<div class="section-header">Missing Values Summary</div>', unsafe_allow_html=True)
+        st.dataframe(preprocessing.get_missing_value_summary(single_df), use_container_width=True)
+
+        st.markdown('<div class="section-header">Descriptive Statistics</div>', unsafe_allow_html=True)
+        st.dataframe(df[["Open", "High", "Low", "Close", "Volume"]].describe(), use_container_width=True)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown('<div class="section-header">Price Distribution</div>', unsafe_allow_html=True)
+            st.plotly_chart(charts.distribution_chart(df["Close"], "Close Price Distribution", "Close Price"), use_container_width=True)
+        with col2:
+            st.markdown('<div class="section-header">Returns Distribution</div>', unsafe_allow_html=True)
+            st.plotly_chart(charts.distribution_chart(df["Daily Return"], "Daily Returns Distribution", "Daily Return (%)"), use_container_width=True)
+
+        st.markdown('<div class="section-header">Monthly Average Return</div>', unsafe_allow_html=True)
+        monthly = df.copy()
+        monthly["Month"] = monthly["Date"].dt.to_period("M").astype(str)
+        monthly_avg = monthly.groupby("Month")["Daily Return"].mean().reset_index()
+        monthly_avg.columns = ["Month", "Avg Daily Return (%)"]
+        st.dataframe(monthly_avg, use_container_width=True)
+
+        st.markdown('<div class="section-header">Best & Worst Trading Days</div>', unsafe_allow_html=True)
+        col3, col4, col5 = st.columns(3)
+        best_day = df.loc[df["Daily Return"].idxmax()]
+        worst_day = df.loc[df["Daily Return"].idxmin()]
+        highest_vol_day = df.loc[df["Volume"].idxmax()]
+
+        col3.metric("📈 Best Day", best_day["Date"].strftime("%Y-%m-%d"), f"{best_day['Daily Return']:.2f}%")
+        col4.metric("📉 Worst Day", worst_day["Date"].strftime("%Y-%m-%d"), f"{worst_day['Daily Return']:.2f}%")
+        col5.metric("🔊 Highest Volume Day", highest_vol_day["Date"].strftime("%Y-%m-%d"), f"{int(highest_vol_day['Volume']):,}")
+
+
+# ========================================================================================
+# TAB 4: COMPARE STOCKS
+# ========================================================================================
+with tab_compare:
+    compare_df = st.session_state.compare_df
+    if not compare_mode:
+        st.info("👈 Tick **Compare Multiple Stocks** in the sidebar, enter tickers, then click **Fetch Data**.")
+    elif compare_df is None:
+        st.info("👈 Click **Fetch Data** in the sidebar to load the comparison.")
+    else:
+        st.markdown('<div class="section-header">Normalized Price Comparison (Base = 100)</div>', unsafe_allow_html=True)
+        normalized = comparison.normalize_prices(compare_df)
+        st.plotly_chart(charts.normalized_comparison_chart(normalized), use_container_width=True)
+
+        st.markdown('<div class="section-header">Correlation Heatmap</div>', unsafe_allow_html=True)
+        corr = comparison.compute_correlation_matrix(compare_df)
+        st.plotly_chart(charts.correlation_heatmap(corr), use_container_width=True)
+
+        st.markdown('<div class="section-header">Risk-Return Scatter Plot</div>', unsafe_allow_html=True)
+        summary = comparison.build_comparison_summary(compare_df)
+        st.plotly_chart(charts.risk_return_scatter(summary), use_container_width=True)
+
+        st.markdown('<div class="section-header">Comparison Summary Table</div>', unsafe_allow_html=True)
+        st.dataframe(summary, use_container_width=True)
+
+        st.download_button(
+            "⬇️ Download Comparison Summary (CSV)",
+            data=dataframe_to_csv_bytes(summary),
+            file_name="comparison_summary.csv",
+            mime="text/csv",
+        )
+
+
+# ========================================================================================
+# TAB 5: RISK & RETURNS
+# ========================================================================================
+with tab_risk:
+    compare_df = st.session_state.compare_df
+    if compare_df is not None:
+        st.markdown('<div class="section-header">Risk vs Return (Multiple Stocks)</div>', unsafe_allow_html=True)
+        summary = comparison.build_comparison_summary(compare_df)
+        st.plotly_chart(charts.risk_return_scatter(summary), use_container_width=True)
+        st.dataframe(summary, use_container_width=True)
+        st.markdown(
+            """
+            **How to read this chart:** Stocks in the upper-left are ideal — higher return for
+            lower risk (volatility). Stocks in the lower-right delivered poor return for high risk.
+            The **Sharpe-like Ratio** is a simplified risk-adjusted return measure: higher is better.
+            """
+        )
+    elif single_df is not None:
+        st.markdown('<div class="section-header">Single Stock Risk Summary</div>', unsafe_allow_html=True)
+        kpis = kpi.compute_kpis(enriched_df)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Return", format_percent(kpis.get("total_return_pct")))
+        c2.metric("Annualized Volatility", format_percent(kpis.get("annualized_volatility_pct")))
+        c3.metric("Risk Level", kpis.get("risk_level", "N/A"))
+        st.markdown(
+            f"""
+            **Risk level explanation:** Based on annualized volatility of
+            **{format_percent(kpis.get('annualized_volatility_pct'))}**, this stock is classified as
+            **{kpis.get('risk_level', 'N/A')}**. Enable *Compare Multiple Stocks* in the sidebar to see
+            a full risk-return scatter plot across several tickers.
+            """
+        )
+    else:
+        st.info("👈 Fetch data from the sidebar to view risk & return analysis.")
+
+
+# ========================================================================================
+# TAB 6: ABOUT PROJECT
+# ========================================================================================
+with tab_about:
+    st.markdown('<div class="section-header">What This Project Does</div>', unsafe_allow_html=True)
     st.markdown(
         """
-        <div style="text-align:center; padding:40px 0 20px; color:#374151;
-                    font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:1px;">
-            STOCKSENSE ANALYTICS DASHBOARD  ·  DATA VIA YAHOO FINANCE  ·  BUILT WITH STREAMLIT & PLOTLY
-        </div>
-        """,
-        unsafe_allow_html=True,
+        This dashboard fetches **live stock market data** from Yahoo Finance and performs:
+        - Exploratory Data Analysis (EDA)
+        - Technical indicator calculation (SMA, EMA, RSI, MACD, Bollinger Bands)
+        - Risk & return analysis (volatility, drawdown, Sharpe-like ratio)
+        - Multi-stock comparison (normalized prices, correlation, risk-return scatter)
+        """
     )
 
+    st.markdown('<div class="section-header">Tech Stack</div>', unsafe_allow_html=True)
+    st.markdown("- **Python 3.10+** · **Streamlit** (UI) · **Pandas / NumPy** (data) · **Plotly** (charts) · **yFinance** (data source)")
 
-if __name__ == "__main__":
-    main()
+    st.markdown('<div class="section-header">Data Source</div>', unsafe_allow_html=True)
+    st.markdown("All data is pulled live and free from **Yahoo Finance** via the `yfinance` Python library — no API key required.")
+
+    st.markdown('<div class="section-header">Limitations</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        - Depends on Yahoo Finance availability/rate limits — occasional fetch failures are handled gracefully.
+        - Intraday data is not included (only daily/weekly/monthly intervals).
+        - The Sharpe-like ratio is a simplified teaching approximation, not a regulated financial metric.
+        - This tool is for **educational/demonstration purposes only** and is **not financial advice**.
+        """
+    )
+
+    st.markdown('<div class="section-header">Resume Bullet Points</div>', unsafe_allow_html=True)
+    st.code(
+        "- Built a full-stack stock market analytics dashboard (Streamlit, Pandas, Plotly, yFinance) "
+        "with 10+ interactive charts and 6 technical indicators.\n"
+        "- Implemented modular data pipeline (fetch -> clean -> preprocess -> indicators -> visualize) "
+        "with robust error handling for invalid tickers and missing data.\n"
+        "- Designed multi-stock comparison engine with normalized pricing, correlation heatmaps, "
+        "and risk-return analysis (Sharpe-like ratio).",
+        language="text",
+    )
+
+# --------------------------------------------------------------------------------------
+# FOOTER
+# --------------------------------------------------------------------------------------
+st.markdown(
+    '<div class="app-footer">Stock Market EDA & Trend Analysis Dashboard · Built with Streamlit, '
+    'Pandas, Plotly & yFinance · Data source: Yahoo Finance · For educational purposes only, '
+    'not financial advice.</div>',
+    unsafe_allow_html=True,
+)

@@ -1,0 +1,102 @@
+/* ============================================================
+   assets/style.css
+   Custom dark theme styling for the Stock Market EDA Dashboard.
+   Loaded once in app.py via st.markdown(<style>...</style>)
+   ============================================================ */
+
+/* Overall app background */
+.stApp {
+    background: radial-gradient(circle at top left, #0f1117 0%, #05060a 100%);
+    color: #e6e6e6;
+    font-family: 'Segoe UI', 'Inter', sans-serif;
+}
+
+/* Gradient main title */
+.app-title {
+    font-size: 2.4rem;
+    font-weight: 800;
+    background: linear-gradient(90deg, #00d4ff, #7b61ff, #ff6b6b);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.1rem;
+}
+
+.app-subtitle {
+    color: #9aa3b2;
+    font-size: 1.05rem;
+    margin-bottom: 1.2rem;
+}
+
+/* KPI Card */
+.kpi-card {
+    background: linear-gradient(145deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    padding: 16px 18px;
+    text-align: left;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+    height: 100%;
+}
+
+.kpi-label {
+    font-size: 0.8rem;
+    color: #9aa3b2;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+}
+
+.kpi-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.kpi-sub {
+    font-size: 0.78rem;
+    margin-top: 4px;
+}
+
+.kpi-positive { color: #26a69a; }
+.kpi-negative { color: #ef5350; }
+.kpi-neutral  { color: #ffd166; }
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    background-color: #0b0d13;
+    border-right: 1px solid rgba(255,255,255,0.06);
+}
+
+/* Tabs */
+button[data-baseweb="tab"] {
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+/* Footer */
+.app-footer {
+    text-align: center;
+    color: #6b7280;
+    font-size: 0.82rem;
+    padding: 18px 0 6px 0;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    margin-top: 2rem;
+}
+
+/* Section headers inside tabs */
+.section-header {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #ffffff;
+    margin-top: 1.2rem;
+    margin-bottom: 0.4rem;
+    border-left: 4px solid #00d4ff;
+    padding-left: 10px;
+}
+
+/* Tighter dataframe rounding */
+[data-testid="stDataFrame"] {
+    border-radius: 10px;
+    overflow: hidden;
+}
